@@ -1,0 +1,142 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpportunityScout</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <header class="navbar">
+    <div class="brand">
+      <div class="logo">OS</div>
+      <div>
+        <h1>OpportunityScout</h1>
+        <span>AI-powered opportunity finder</span>
+      </div>
+    </div>
+
+    <div class="status">
+      <span class="status-dot"></span>
+      Agent Ready
+    </div>
+  </header>
+
+  <main>
+
+    <section class="hero">
+      <div class="badge">✦ BROWSER AGENT</div>
+
+      <h2>Find opportunities.<br><span>Without the endless searching.</span></h2>
+
+      <p>
+        Tell OpportunityScout what you're looking for.
+        Our browser agent searches live opportunity platforms for you.
+      </p>
+
+      <div class="search-box">
+        <input
+          id="query"
+          type="text"
+          value="AI ML hackathons in India"
+          placeholder="What opportunity are you looking for?"
+        >
+
+        <button id="searchBtn">
+          Find Opportunities →
+        </button>
+      </div>
+
+      <div class="suggestions">
+        <span>Try:</span>
+        <button onclick="setQuery('AI ML hackathons in India')">AI/ML Hackathons</button>
+        <button onclick="setQuery('Web development hackathons')">Web Development</button>
+        <button onclick="setQuery('College student hackathons')">Student Hackathons</button>
+      </div>
+    </section>
+
+    <section class="agent-panel" id="agentPanel">
+
+      <div class="agent-header">
+        <div>
+          <h3>Agent Activity</h3>
+          <p id="agentMessage">Ready to search live websites</p>
+        </div>
+
+        <span id="agentStatus" class="agent-status">READY</span>
+      </div>
+
+      <div class="activity">
+        <div class="activity-step" id="step1">
+          <span>🔎</span>
+          <div>
+            <strong>Searching</strong>
+            <small>Finding relevant opportunities</small>
+          </div>
+        </div>
+
+        <div class="activity-step" id="step2">
+          <span>🌐</span>
+          <div>
+            <strong>Browsing</strong>
+            <small>Opening live opportunity pages</small>
+          </div>
+        </div>
+
+        <div class="activity-step" id="step3">
+          <span>📄</span>
+          <div>
+            <strong>Extracting</strong>
+            <small>Collecting opportunity information</small>
+          </div>
+        </div>
+
+        <div class="activity-step" id="step4">
+          <span>✓</span>
+          <div>
+            <strong>Complete</strong>
+            <small>Results ready</small>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="results-section">
+
+      <div class="results-header">
+        <div>
+          <span class="section-label">LIVE RESULTS</span>
+          <h3 id="resultsTitle">Opportunities for you</h3>
+        </div>
+
+        <span id="resultCount" class="count">0 opportunities</span>
+      </div>
+
+      <div id="results" class="results-grid">
+
+        <div class="empty-state">
+          <div class="empty-icon">⌕</div>
+          <h3>Your opportunities will appear here</h3>
+          <p>Enter a request above and let the browser agent do the searching.</p>
+        </div>
+
+      </div>
+
+    </section>
+
+  </main>
+
+  <footer>
+    <span>OpportunityScout</span>
+    <span>Built with Webcmd + AI</span>
+  </footer>
+
+  <script src="script.js"></script>
+
+</body>
+</html>
+```

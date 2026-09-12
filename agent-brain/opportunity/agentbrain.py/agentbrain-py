@@ -1,0 +1,290 @@
+"""
+Answers: "What should the agent do?"
+
+This module owns:
+  - the prompt(s) sent to Claude
+  - planning        -> turning a user query into a search strategy
+  - deciding        -> what to open, what to extract, when to stop
+  - summarizing     -> turning messy extracted data into clean table rows
+
+This module does NOT:
+  - touch a browser, call requests/playwright, or parse HTML   (-> Member 2 / webcmd)
+  - render anything to a screen                                (-> Member 3 / UI)
+
+"""
+
+from dataclasses import dataclass, asdict
+from typing import Callable, Optional
+import json
+import os
+import re
+
+try:
+    import anthropic
+except ImportError:  # pragma: no cover - optional runtime dependency
+    anthropic = None
+
+
+# ------------------------------------------------------------------
+# 1. OUTPUT SCHEMA  (what Member 3's table actually renders)
+# ------------------------------------------------------------------
+
+@dataclass
+class OpportunityRow:
+    name: str
+    deadline: str          # "20 Sept" or "Rolling"
+    eligibility: str        # short phrase e.g. "College students"
+    url: str                # kept for the "open" button, not shown in table
+
+
+# ------------------------------------------------------------------
+# 2. PROMPTS  (this is the actual "Claude" part of Member 1's job)
+# ------------------------------------------------------------------
+
+PLANNING_PROMPT = """You are the planning module of a hackathon-finder agent.
+
+The user typed this request: "{query}"
+
+Turn this into 2-3 short, specific web search queries (3-6 words each)
+that will find CURRENT, OPEN opportunities matching the request.
+Prefer queries that include the current year and words like "apply",
+"register", "deadline" where relevant.
+
+Respond as a JSON list of strings only. No other text.
+Example: ["AI hackathon India 2026 register", "student hackathon India deadline"]
+"""
+
+EXTRACTION_PROMPT = """You are the extraction module of a hackathon-finder agent.
+
+Below is the text content of a webpage for a possible opportunity.
+Decide if this page describes a real, currently-open opportunity that
+matches the user's original request: "{query}"
+
+If it does NOT match (wrong topic, expired, not open to the target
+audience), respond with exactly: {{"match": false}}
+
+If it DOES match, extract these fields and respond as JSON:
+{{
+  "match": true,
+  "name": "<event/opportunity name>",
+  "deadline": "<DD Mon format, or 'Rolling' if none stated>",
+  "eligibility": "<short phrase, e.g. 'College students', 'All years'>"
+}}
+
+Only use information actually present on the page. Do not guess a
+deadline or eligibility that isn't stated - if genuinely absent, use
+"Not specified" for eligibility or "Rolling" for deadline.
+
+PAGE URL: {url}
+PAGE CONTENT:
+---
+{page_text}
+---
+
+Respond with JSON only, no other text.
+"""
+
+SUMMARY_NOTE_PROMPT = """You have this list of extracted opportunities (JSON).
+Remove exact duplicates (same name + same host site). If two entries
+clearly describe the same event from different pages, keep the one
+with more complete data. Do not invent new fields.
+
+INPUT:
+{rows_json}
+
+Respond with the deduplicated JSON list, same schema, no other text.
+"""
+
+
+# ------------------------------------------------------------------
+# 3. THIN WRAPPER AROUND THE ACTUAL CLAUDE CALL
+#    (swap this out for real API calls - kept isolated on purpose
+#     so Member 4 can mock it during integration testing)
+# ------------------------------------------------------------------
+
+def call_claude(prompt: str) -> str:
+    if anthropic is None:
+        raise RuntimeError(
+            "The 'anthropic' package is not installed. Run: python -m pip install anthropic"
+        )
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set. Add it to your environment or run the app in demo mode."
+        )
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
+    return response.content[0].text
+
+def _safe_json_parse(text: str, default):
+    """Claude sometimes wraps JSON in ```json fences - strip and parse safely."""
+    cleaned = re.sub(r"^```json|```$", "", text.strip(), flags=re.MULTILINE).strip()
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+# ------------------------------------------------------------------
+# 4. THE BRAIN'S ORCHESTRATION LOOP
+#    (this is the "planning / deciding" part - the actual answer
+#     to "what should the agent do?")
+# ------------------------------------------------------------------
+
+class WebcmdError(Exception):
+    pass
+
+
+def run_agent(
+    user_query: str,
+    webcmd_search: Callable[[str], list],
+    webcmd_open: Callable[[str], str],
+    on_status: Optional[Callable[[str], None]] = None,
+    max_pages_to_open: int = 6,
+    demo_mode: bool = False,
+) -> list[OpportunityRow]:
+    """
+    The main entry point Member 3's UI calls.
+
+    webcmd_search / webcmd_open  -> injected by Member 2, so this file
+    has zero import-time dependency on the browser layer. Makes it
+    trivially testable and mockable for Member 4's demo fallback.
+    """
+    status = on_status or (lambda step: None)
+
+    # ---- Step 1: Understanding request -----------------------------
+    status("Understanding request")
+    if demo_mode:
+        queries = [f"{user_query} 2026", f"{user_query} apply deadline"]
+    else:
+        plan_text = call_claude(PLANNING_PROMPT.format(query=user_query))
+        queries = _safe_json_parse(plan_text, default=[user_query])
+
+    # ---- Step 2: Searching web --------------------------------------
+    status("Searching web")
+    candidates = []
+    for q in queries:
+        try:
+            candidates.extend(webcmd_search(q))
+        except WebcmdError:
+            continue  # one bad query shouldn't kill the whole run
+
+    # de-dupe candidate URLs before opening any of them
+    seen_urls = set()
+    unique_candidates = []
+    for c in candidates:
+        if c["url"] not in seen_urls:
+            seen_urls.add(c["url"])
+            unique_candidates.append(c)
+
+    # ---- Step 3-5: open -> check eligibility -> extract deadline ----
+    # (looped per-candidate; UI can light up these three checklist
+    #  items repeatedly as each candidate is processed)
+    extracted: list[dict] = []
+    for candidate in unique_candidates[:max_pages_to_open]:
+        status("Opening opportunity page")
+        try:
+            page_text = webcmd_open(candidate["url"])
+        except WebcmdError:
+            continue
+
+        status("Checking eligibility")
+        status("Extracting deadline")
+
+        if demo_mode:
+            result = {"match": False}
+        else:
+            raw = call_claude(
+                EXTRACTION_PROMPT.format(
+                    query=user_query, url=candidate["url"], page_text=page_text[:6000]
+                )
+            )
+            result = _safe_json_parse(raw, default={"match": False})
+
+        if result.get("match"):
+            result["url"] = candidate["url"]
+            extracted.append(result)
+
+    # ---- Step 6: Comparing opportunities -----------------------------
+    status("Comparing opportunities")
+    if len(extracted) > 1 and not demo_mode:
+        dedup_raw = call_claude(
+            SUMMARY_NOTE_PROMPT.format(rows_json=json.dumps(extracted))
+        )
+        extracted = _safe_json_parse(dedup_raw, default=extracted)
+
+    status("Done")
+
+    return [
+        OpportunityRow(
+            name=e.get("name", "Unknown"),
+            deadline=e.get("deadline", "Rolling"),
+            eligibility=e.get("eligibility", "Not specified"),
+            url=e.get("url", ""),
+        )
+        for e in extracted
+    ]
+
+
+# ------------------------------------------------------------------
+# 5. STANDALONE DEMO  (fallback for Member 4 if live search is down
+#    during judging - run `python agent_brain.py` directly)
+# ------------------------------------------------------------------
+
+def _mock_webcmd_search(query: str) -> list:
+    return [
+        {"title": "ABC Hackathon 2026", "url": "https://example.com/abc", "snippet": ""},
+        {"title": "XYZ AI Hackathon", "url": "https://example.com/xyz", "snippet": ""},
+    ]
+
+
+def _mock_webcmd_open(url: str) -> str:
+    return "Mock page content for " + url
+
+
+if __name__ == "__main__":
+    if anthropic is None or not os.getenv("ANTHROPIC_API_KEY"):
+        def print_status(step):
+            print(f"  ✓ {step}")
+
+        print("AGENT ACTIVITY")
+        print("Anthropic dependency not configured; running demo mode instead.")
+        rows = run_agent(
+            "AI hackathons for students in India",
+            webcmd_search=_mock_webcmd_search,
+            webcmd_open=_mock_webcmd_open,
+            on_status=print_status,
+            demo_mode=True,
+        )
+
+        if not rows:
+            rows = [
+                OpportunityRow("ABC Hackathon", "20 Sept", "Students", "https://example.com/abc"),
+                OpportunityRow("XYZ Hackathon", "25 Sept", "College students", "https://example.com/xyz"),
+            ]
+
+        print("\nOPPORTUNITIES FOUND\n")
+        print(f"{'Hackathon':<16}{'Deadline':<13}{'Eligibility'}")
+        print("-" * 44)
+        for r in rows:
+            print(f"{r.name:<16}{r.deadline:<13}{r.eligibility}")
+    else:
+        print("Testing Claude connection...")
+        result = call_claude(
+            'Return exactly this JSON: {"status": "Claude connected"}'
+        )
+        print("Claude response:")
+        print(result)
